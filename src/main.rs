@@ -1,7 +1,15 @@
+mod github;
+mod models;
+mod filter;
 //Setup Dependencies
 use actix_cors::Cors;
 use actix_web::{App, web, HttpResponse, HttpServer, Responder, get, post};
 use serde::{Deserialize, Serialize};
+use crate::github::fetch_issues; // Import the fetch_issues function
+use crate::filter::is_spam_issue; // Import the is_spam_issue function
+
+extern crate dotenv;
+use dotenv::dotenv;
 
 //Define struct for the Issue filter request
 #[derive(Debug, Serialize, Deserialize)]
@@ -25,13 +33,29 @@ async fn index() -> impl Responder {
 // Handler for filtering GitHub issues
 #[post("/filter_issues")]
 async fn filter_issues(info: web::Json<IssueFilterRequest>) -> impl Responder {
-    println!("Filtering issues for repo: {}", info.repository);
-    // Placeholder response, replace with actual filtering logic
-    HttpResponse::Ok().json(vec![Issue { title: "Example Issue".into() }]) //todo! Come back after working on github API, filter
+    let repo = &info.repository;
+    match fetch_issues(repo).await {
+        Ok(issues) => {
+            // Filter issues based on spam detection logic
+            let filtered_issues: Vec<Issue> = futures::future::join_all(issues.into_iter().map(|issue| async move {
+                if is_spam_issue(&issue).await.unwrap_or(false) {
+                    None // Filter out spam issues
+                } else {
+                    Some(Issue { title: issue.title }) // Keep legitimate issues
+                }
+            })).await.into_iter().filter_map(|x| x).collect();
+
+            HttpResponse::Ok().json(filtered_issues) // Return filtered legitimate issues
+        },
+        Err(_) => HttpResponse::InternalServerError().finish(),
+    }
 }
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
+
+    dotenv().ok();
+
     HttpServer::new(|| {
         let cors = Cors::default()
             .allow_any_origin()
